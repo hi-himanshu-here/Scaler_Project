@@ -59,6 +59,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/", (_req, res) => {
+  res.send("Cal.com Clone API is running");
+});
+
 (async () => {
   await registerRoutes(httpServer, app);
 
