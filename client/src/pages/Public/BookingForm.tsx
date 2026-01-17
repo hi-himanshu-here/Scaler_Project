@@ -41,7 +41,7 @@ export default function BookingFormPage() {
   if (isLoading) return <LoadingScreen />;
   if (!eventType || !dateParam || !timeParam) return <div>Invalid booking details</div>;
 
-  const date = new Date(dateParam);
+  const date = new Date(`${dateParam}T00:00:00`);
   // Parse time and combine with date for start time
   const timeDate = parse(timeParam, "HH:mm", date);
   // const startTimeISO = timeDate.toISOString(); 

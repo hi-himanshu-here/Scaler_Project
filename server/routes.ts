@@ -3,13 +3,12 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { insertEventTypeSchema } from "@shared/schema";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  
+
   // Seed Helper
   async function seedDatabase() {
     const existingUser = await storage.getUserByUsername("demo");
@@ -23,7 +22,6 @@ export async function registerRoutes(
         timezone: "America/New_York",
       });
 
-      // Event Types
       await storage.createEventType({
         userId: user.id,
         title: "15 Min Meeting",
@@ -42,7 +40,6 @@ export async function registerRoutes(
         isHidden: false,
       });
 
-      // Availability (Mon-Fri 9-5)
       const availability = [];
       for (let day = 1; day <= 5; day++) {
         availability.push({
@@ -53,19 +50,16 @@ export async function registerRoutes(
           isActive: true,
         });
       }
+
       await storage.updateAvailability(user.id, availability);
       console.log("Database seeded!");
     }
   }
 
-  // Ensure seeding runs (simple hack: run on first request or just execute now? 
-  // Better to just call it. Since we are in an async function, we can await it slightly or let it float.
-  // We'll call it and catch errors.)
   seedDatabase().catch(console.error);
 
   // === USERS ===
-  
-  // Helper to get "current" user (simulated auth)
+
   async function getCurrentUser() {
     return await storage.getUserByUsername("demo");
   }
@@ -80,6 +74,21 @@ export async function registerRoutes(
     const user = await storage.getUserByUsername(req.params.username);
     if (!user) return res.status(404).json({ message: "User not found" });
     res.json(user);
+  });
+
+  // ✅ ADD THIS: Update timezone (assignment-safe)
+  app.patch("/api/users/timezone", async (req, res) => {
+    const user = await getCurrentUser();
+    if (!user) return res.status(401).json({ message: "Unauthorized" });
+
+    const { timezone } = req.body;
+
+    if (!timezone || typeof timezone !== "string") {
+      return res.status(400).json({ message: "Timezone is required" });
+    }
+
+    const updated = await storage.updateUserTimezone(user.id, timezone);
+    res.json(updated);
   });
 
   // === EVENT TYPES ===
@@ -100,14 +109,18 @@ export async function registerRoutes(
   app.get(api.eventTypes.getBySlug.path, async (req, res) => {
     const { username, slug } = req.params;
     const type = await storage.getEventTypeBySlug(username, slug);
-    if (!type) return res.status(404).json({ message: "Event Type not found" });
+
+    if (!type || type.isHidden) {
+      return res.status(404).json({ message: "Event Type not found" });
+    }
+
     res.json(type);
   });
 
   app.post(api.eventTypes.create.path, async (req, res) => {
     const user = await getCurrentUser();
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    
+
     try {
       const input = api.eventTypes.create.input.parse(req.body);
       const newType = await storage.createEventType({
@@ -124,14 +137,9 @@ export async function registerRoutes(
   });
 
   app.put(api.eventTypes.update.path, async (req, res) => {
-    try {
-      const input = api.eventTypes.update.input.parse(req.body);
-      const updated = await storage.updateEventType(Number(req.params.id), input);
-      res.json(updated);
-    } catch (err) {
-       // Handle not found/zod
-       res.status(500).json({message: "Error updating"});
-    }
+    const input = api.eventTypes.update.input.parse(req.body);
+    const updated = await storage.updateEventType(Number(req.params.id), input);
+    res.json(updated);
   });
 
   app.delete(api.eventTypes.delete.path, async (req, res) => {
@@ -161,7 +169,6 @@ export async function registerRoutes(
 
     try {
       const { schedule } = api.availability.update.input.parse(req.body);
-      // Map to InsertAvailability
       const insertData = schedule.map(s => ({
         userId: user.id,
         dayOfWeek: s.dayOfWeek,
@@ -169,16 +176,51 @@ export async function registerRoutes(
         endTime: s.endTime,
         isActive: s.isActive,
       }));
-      
+
       const updated = await storage.updateAvailability(user.id, insertData);
       res.json(updated);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        return res.status(400).json({ message: err.errors[0].message });
+    } catch (err: any) {
+      if (err?.message === "INVALID_DAY_OF_WEEK") {
+        return res.status(400).json({ message: "Invalid day of week" });
       }
-      throw err;
+      if (err?.message === "INVALID_TIME_RANGE") {
+        return res.status(400).json({ message: "Start time must be before end time" });
+      }
+      if (err?.message === "OVERLAPPING_AVAILABILITY") {
+        return res.status(400).json({ message: "Availability slots cannot overlap" });
+      }
+      return res.status(500).json({ message: "Failed to update availability" });
     }
   });
+
+  // === DATE OVERRIDES (PUBLIC) ===
+app.get("/api/date-overrides/:username", async (req, res) => {
+  const { username } = req.params;
+  const { date } = req.query;
+
+  if (!date || typeof date !== "string") {
+    return res.status(400).json({ message: "Date is required" });
+  }
+
+  const user = await storage.getUserByUsername(username);
+  if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+
+  const override = await storage.getDateOverride(user.id, date);
+
+  // No override → return null (client handles this)
+  if (!override) {
+    return res.json(null);
+  }
+
+  res.json({
+    isBlocked: override.isBlocked,
+    startTime: override.startTime,
+    endTime: override.endTime,
+  });
+});
+
 
   // === BOOKINGS ===
 
@@ -193,31 +235,36 @@ export async function registerRoutes(
     try {
       const input = api.bookings.create.input.parse(req.body);
       const eventType = await storage.getEventType(input.eventTypeId);
-      if (!eventType) return res.status(404).json({ message: "Event type not found" });
+      if (!eventType) {
+        return res.status(404).json({ message: "Event type not found" });
+      }
 
-      // Calculate end time
       const start = new Date(input.startTime);
       const end = new Date(start.getTime() + eventType.duration * 60000);
 
-      // Check conflict
-      const conflict = await storage.checkBookingConflict(input.eventTypeId, start, end);
+      const conflict = await storage.checkBookingConflict(
+        input.eventTypeId,
+        start,
+        end
+      );
+
       if (conflict) {
         return res.status(409).json({ message: "This time slot is already booked." });
       }
 
       const booking = await storage.createBooking({
         ...input,
-        userId: eventType.userId, // The host
+        userId: eventType.userId,
+        startTime: start,
         endTime: end,
-        startTime: start, // Ensure it's a Date object
       });
 
       res.status(201).json(booking);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        return res.status(400).json({ message: err.errors[0].message });
+    } catch (err: any) {
+      if (err?.message === "BOOKING_CONFLICT") {
+        return res.status(409).json({ message: "This time slot is already booked." });
       }
-      throw err;
+      return res.status(500).json({ message: "Failed to create booking" });
     }
   });
 

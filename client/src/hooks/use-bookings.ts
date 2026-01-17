@@ -50,3 +50,15 @@ export function useCancelBooking() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [api.bookings.list.path] }),
   });
 }
+
+export function usePublicBookings(eventTypeId?: number) {
+  return useQuery({
+    enabled: !!eventTypeId,
+    queryKey: ["public-bookings", eventTypeId],
+    queryFn: async () => {
+      const res = await fetch(`/api/bookings?eventTypeId=${eventTypeId}`);
+      if (!res.ok) throw new Error("Failed to fetch bookings");
+      return await res.json();
+    },
+  });
+}
