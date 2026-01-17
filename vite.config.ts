@@ -1,14 +1,13 @@
-import { defineConfig } from "vite";
+import { defineConfig, type PluginOption } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-// Only load Replit plugins in development
-const isDev =
-  process.env.NODE_ENV !== "production" &&
-  process.env.REPL_ID !== undefined;
-
 export default defineConfig(async () => {
-  const plugins = [react()];
+  const plugins: PluginOption[] = [react()];
+
+  const isDev =
+    process.env.NODE_ENV !== "production" &&
+    process.env.REPL_ID !== undefined;
 
   if (isDev) {
     const runtimeErrorOverlay = (
@@ -23,7 +22,9 @@ export default defineConfig(async () => {
       "@replit/vite-plugin-dev-banner"
     );
 
-    plugins.push(runtimeErrorOverlay(), cartographer(), devBanner());
+    plugins.push(runtimeErrorOverlay());
+    plugins.push(cartographer());
+    plugins.push(devBanner());
   }
 
   return {
